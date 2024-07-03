@@ -10,7 +10,7 @@ Servo servoX;
 Servo servoY;
 
 // PID constants
-double Kp = 1.0, Ki = 0.0, Kd = 0.1;
+double Kp = 1.0, Ki = 0.0, Kd = 0.0;
 
 // PID variables for X axis
 double setpointX = 0.0, inputX, outputX;
@@ -53,6 +53,8 @@ void setup(void) {
   // Initialize PID controllers
   pidX.SetMode(AUTOMATIC);
   pidY.SetMode(AUTOMATIC);
+  pidX.SetOutputLimits(-45,45);
+  pidY.SetOutputLimits(-45,45);
 
   Serial.println("");
   delay(100);
@@ -98,5 +100,5 @@ void loop() {
   Serial.println(servoPosY);
 
   Serial.println("");
-  delay(500);
+  delay(100);
 }
