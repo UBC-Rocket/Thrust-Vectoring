@@ -10,7 +10,7 @@ Servo servoX;
 Servo servoY;
 
 // PID constants
-double Kp = 1.0, Ki = 0.0, Kd = 0.0;
+double Kp = 5.0, Ki = 1.0, Kd = 1.0;
 
 // PID variables for X axis
 double setpointX = 0.0, inputX, outputX;
@@ -21,6 +21,21 @@ double setpointY = 0.0, inputY, outputY;
 PID pidY(&inputY, &outputY, &setpointY, Kp, Ki, Kd, DIRECT);
 
 Adafruit_MPU6050 mpu;
+
+// Kalman filter variables
+float KalmanAngleRoll=0, KalmanUncertaintyAngleRoll=2*2;
+float KalmanAnglePitch=0, KalmanUncertaintyAnglePitch=2*2;
+float Kalman1DOutput[]={0,0};
+
+void kalman_1d(float KalmanState, float KalmanUncertainty, float KalmanInput, float KalmanMeasurement) {
+  KalmanState=KalmanState+0.004*KalmanInput;
+  KalmanUncertainty=KalmanUncertainty + 0.004 * 0.004 * 4 * 4;
+  float KalmanGain=KalmanUncertainty * 1/(1*KalmanUncertainty + 3 * 3);
+  KalmanState=KalmanState+KalmanGain * (KalmanMeasurement-KalmanState);
+  KalmanUncertainty=(1-KalmanGain) * KalmanUncertainty;
+  Kalman1DOutput[0]=KalmanState; 
+  Kalman1DOutput[1]=KalmanUncertainty;
+}
 
 void setup(void) {
   Serial.begin(115200);
@@ -48,13 +63,13 @@ void setup(void) {
 
   // Set initial servo positions
   servoX.write(90);
-  servoY.write(90);
+  servoY.write(84);
 
   // Initialize PID controllers
   pidX.SetMode(AUTOMATIC);
   pidY.SetMode(AUTOMATIC);
-  pidX.SetOutputLimits(-45,45);
-  pidY.SetOutputLimits(-45,45);
+  pidX.SetOutputLimits(-4,4);
+  pidY.SetOutputLimits(-4,4);
 
   Serial.println("");
   delay(100);
@@ -65,26 +80,32 @@ void loop() {
   sensors_event_t a, g, temp;
   mpu.getEvent(&a, &g, &temp);
 
-  // Acceleration Values
-  Serial.print("Acceleration X: ");
-  Serial.print(a.acceleration.x);
-  Serial.print(", Y: ");
-  Serial.print(a.acceleration.y);
-  Serial.println(" m/s^2");
+  // Apply Kalman filter to accelerometer and gyroscope data
+  kalman_1d(KalmanAngleRoll, KalmanUncertaintyAngleRoll, g.gyro.x, a.acceleration.x);
+  KalmanAngleRoll = Kalman1DOutput[0];
+  KalmanUncertaintyAngleRoll = Kalman1DOutput[1];
 
-  // PID calculations for X axis
-  inputX = a.acceleration.x; // Using acceleration as input
+  kalman_1d(KalmanAnglePitch, KalmanUncertaintyAnglePitch, g.gyro.y, a.acceleration.y);
+  KalmanAnglePitch = Kalman1DOutput[0];
+  KalmanUncertaintyAnglePitch = Kalman1DOutput[1];
+
+  // Use filtered angles as input to PID
+  inputX = KalmanAngleRoll;
   pidX.Compute();
-  int servoPosX = constrain(90 + outputX, 0, 180);
+  int servoPosX = constrain(90 + 5*outputX, 0, 180);
   servoX.write(servoPosX);
 
-  // PID calculations for Y axis
-  inputY = a.acceleration.y; // Using acceleration as input
+  inputY = KalmanAnglePitch;
   pidY.Compute();
-  int servoPosY = constrain(90 + outputY, 0, 180);
+  int servoPosY = constrain(84 + 5*outputY, 0, 180);
   servoY.write(servoPosY);
 
   // outputs on terminal
+  Serial.print("Kalman Roll Angle: ");
+  Serial.print(KalmanAngleRoll);
+  Serial.print(", Kalman Pitch Angle: ");
+  Serial.println(KalmanAnglePitch);
+
   Serial.print("PID Input X: ");
   Serial.print(inputX);
   Serial.print(", PID Output X: ");
