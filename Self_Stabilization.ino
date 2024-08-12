@@ -1,6 +1,4 @@
 // Libraries
-#include <Adafruit_MPU6050.h>
-#include <Adafruit_Sensor.h>
 #include <Wire.h>
 #include <Servo.h>
 #include <PID_v1.h>
@@ -24,23 +22,64 @@ PID pidX(&inputX, &outputX, &setpointX, Kp, Ki, Kd, DIRECT);
 double setpointY = 0.0, inputY, outputY;
 PID pidY(&inputY, &outputY, &setpointY, Kp, Ki, Kd, DIRECT);
 
-// MPU-6050 Variable
-Adafruit_MPU6050 mpu;
-
 // Kalman filter variables
+float RateRoll, RatePitch, RateYaw;
+float RateCalibrationRoll, RateCalibrationPitch, RateCalibrationYaw;
+int RateCalibrationNumber;
+float AccX, AccY, AccZ;
+float AngleRoll, AnglePitch;
+uint32_t LoopTimer;
 float KalmanAngleRoll=0, KalmanUncertaintyAngleRoll=2*2;
 float KalmanAnglePitch=0, KalmanUncertaintyAnglePitch=2*2;
 float Kalman1DOutput[]={0,0};
 
-// Function to update Kalman filter
-void kalman_1d(float &KalmanState, float &KalmanUncertainty, float KalmanInput, float KalmanMeasurement) {
-  KalmanState = KalmanState + 0.004 * KalmanInput;
-  KalmanUncertainty = KalmanUncertainty + 0.004 * 0.004 * 4 * 4;
-  float KalmanGain = KalmanUncertainty / (KalmanUncertainty + 3 * 3);
-  KalmanState = KalmanState + KalmanGain * (KalmanMeasurement - KalmanState);
-  KalmanUncertainty = (1 - KalmanGain) * KalmanUncertainty;
-  Kalman1DOutput[0] = KalmanState;
-  Kalman1DOutput[1] = KalmanUncertainty;
+// Function to update Kalman filter, credit to Carbon Aeronautics
+void kalman_1d(float KalmanState, float KalmanUncertainty, float KalmanInput, float KalmanMeasurement) {
+  KalmanState=KalmanState+0.004*KalmanInput;
+  KalmanUncertainty=KalmanUncertainty + 0.004 * 0.004 * 4 * 4;
+  float KalmanGain=KalmanUncertainty * 1/(1*KalmanUncertainty + 3 * 3);
+  KalmanState=KalmanState+KalmanGain * (KalmanMeasurement-KalmanState);
+  KalmanUncertainty=(1-KalmanGain) * KalmanUncertainty;
+  Kalman1DOutput[0]=KalmanState; 
+  Kalman1DOutput[1]=KalmanUncertainty;
+}
+
+// FUnction to callibrate gyro and accero
+void gyro_signals(void) {
+  Wire.beginTransmission(0x68);
+  Wire.write(0x1A);
+  Wire.write(0x05);
+  Wire.endTransmission();
+  Wire.beginTransmission(0x68);
+  Wire.write(0x1C);
+  Wire.write(0x10);
+  Wire.endTransmission();
+  Wire.beginTransmission(0x68);
+  Wire.write(0x3B);
+  Wire.endTransmission(); 
+  Wire.requestFrom(0x68,6);
+  int16_t AccXLSB = Wire.read() << 8 | Wire.read();
+  int16_t AccYLSB = Wire.read() << 8 | Wire.read();
+  int16_t AccZLSB = Wire.read() << 8 | Wire.read();
+  Wire.beginTransmission(0x68);
+  Wire.write(0x1B); 
+  Wire.write(0x8);
+  Wire.endTransmission();     
+  Wire.beginTransmission(0x68);
+  Wire.write(0x43);
+  Wire.endTransmission();
+  Wire.requestFrom(0x68,6);
+  int16_t GyroX=Wire.read()<<8 | Wire.read();
+  int16_t GyroY=Wire.read()<<8 | Wire.read();
+  int16_t GyroZ=Wire.read()<<8 | Wire.read();
+  RateRoll=(float)GyroX/65.5;
+  RatePitch=(float)GyroY/65.5;
+  RateYaw=(float)GyroZ/65.5;
+  AccX=(float)AccXLSB/4096-0.03;
+  AccY=(float)AccYLSB/4096;
+  AccZ=(float)AccZLSB/4096;
+  AngleRoll=atan(AccY/sqrt(AccX*AccX+AccZ*AccZ))*1/(3.142/180);
+  AnglePitch=-atan(AccX/sqrt(AccY*AccY+AccZ*AccZ))*1/(3.142/180);
 }
 
 void setup(void) {
@@ -56,19 +95,24 @@ void setup(void) {
   esc.attach(6, 900, 2400); // ESC long wire
 
   // MPU-6050 Connection Test
-  Serial.println("Adafruit MPU-6050 test!");
-  if (!mpu.begin()) {
-    Serial.println("Failed to find MPU-6050 chip");
-    while (1) {
-      delay(10);
-    }
+  Wire.setClock(400000);
+  Wire.begin();
+  delay(250);
+  Wire.beginTransmission(0x68); 
+  Wire.write(0x6B);
+  Wire.write(0x00);
+  Wire.endTransmission();
+  for (RateCalibrationNumber=0; RateCalibrationNumber<2000; RateCalibrationNumber ++) {
+    gyro_signals();
+    RateCalibrationRoll+=RateRoll;
+    RateCalibrationPitch+=RatePitch;
+    RateCalibrationYaw+=RateYaw;
+    delay(1);
   }
-  Serial.println("MPU-6050 Found!");
-
-  // Initialize MPU-6050
-  mpu.setAccelerometerRange(MPU6050_RANGE_8_G);
-  mpu.setGyroRange(MPU6050_RANGE_500_DEG);
-  mpu.setFilterBandwidth(MPU6050_BAND_21_HZ);
+  RateCalibrationRoll/=2000;
+  RateCalibrationPitch/=2000;
+  RateCalibrationYaw/=2000;
+  LoopTimer=micros();
 
   // Attach servos
   servoX.attach(9);  // x-axis servo (outer gimbal)
@@ -100,51 +144,49 @@ void loop() {
         }
       }
 
-  // Retrieve latest MPU-6050 data
-  sensors_event_t a, g, temp; // a = accelerometer data, g = gyroscope data, temp = temperature data
-  mpu.getEvent(&a, &g, &temp);
-
-  // Apply Kalman filter to accelerometer and gyroscope data
-  kalman_1d(KalmanAngleRoll, KalmanUncertaintyAngleRoll, g.gyro.x, a.acceleration.x);
-  KalmanAngleRoll = Kalman1DOutput[0];
-  KalmanUncertaintyAngleRoll = Kalman1DOutput[1];
-
-  kalman_1d(KalmanAnglePitch, KalmanUncertaintyAnglePitch, g.gyro.y, a.acceleration.y);
-  KalmanAnglePitch = Kalman1DOutput[0];
-  KalmanUncertaintyAnglePitch = Kalman1DOutput[1];
+  gyro_signals();
+  RateRoll-=RateCalibrationRoll;
+  RatePitch-=RateCalibrationPitch;
+  RateYaw-=RateCalibrationYaw;
+  kalman_1d(KalmanAngleRoll, KalmanUncertaintyAngleRoll, RateRoll, AngleRoll);
+  KalmanAngleRoll=Kalman1DOutput[0]; 
+  KalmanUncertaintyAngleRoll=Kalman1DOutput[1];
+  kalman_1d(KalmanAnglePitch, KalmanUncertaintyAnglePitch, RatePitch, AnglePitch);
+  KalmanAnglePitch=Kalman1DOutput[0]; 
+  KalmanUncertaintyAnglePitch=Kalman1DOutput[1];
 
   // Use filtered angles as input to PID
-  inputX = a.acceleration.x; // inputX = KalmanAngleRoll;
+  inputX = KalmanAnglePitch; // inputX = KalmanAngleRoll;
   pidX.Compute();
   int servoPosX = constrain(servoxinit - 10*outputX, servoxinit - 12, servoxinit + 12);
   servoX.write(servoPosX);
 
-  inputY = a.acceleration.y; // inputY = KalmanAnglePitch;
+  inputY = KalmanAngleRoll; // inputY = KalmanAnglePitch;
   pidY.Compute();
   int servoPosY = constrain(servoyinit + 10*outputY, servoyinit - 12, servoyinit + 12);
   servoY.write(servoPosY);
 
-  // Outputs on terminal
-  // Serial.print("Kalman Roll Angle: ");
-  // Serial.print(KalmanAngleRoll);
-  // Serial.print(", Kalman Pitch Angle: ");
-  // Serial.println(KalmanAnglePitch);
+  Serial.print("Roll Angle [°] ");
+  Serial.print(KalmanAngleRoll);
+  Serial.print(" Pitch Angle [°] ");
+  Serial.println(KalmanAnglePitch);
 
   // Serial.print("PID Input X: ");
   // Serial.print(inputX);
   // Serial.print(", PID Output X: ");
   // Serial.print(outputX);
-  Serial.print(", Servo Position X: ");
-  Serial.println(servoPosX);
+  // Serial.print(", Servo Position X: ");
+  // Serial.println(servoPosX);
 
-  // Serial.print("PID Input Y: ");
-  // Serial.print(inputY);
-  // Serial.print(", PID Output Y: ");
-  // Serial.print(outputY);
-  Serial.print(", Servo Position Y: ");
-  Serial.println(servoPosY);
+  // // Serial.print("PID Input Y: ");
+  // // Serial.print(inputY);
+  // // Serial.print(", PID Output Y: ");
+  // // Serial.print(outputY);
+  // Serial.print(", Servo Position Y: ");
+  // Serial.println(servoPosY);
 
-  delay(20);
+  while (micros() - LoopTimer < 4000);
+  LoopTimer=micros();
 }
 
 // Starts motor
