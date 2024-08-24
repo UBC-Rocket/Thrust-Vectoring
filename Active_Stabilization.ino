@@ -3,14 +3,14 @@
 #include <Servo.h>
 #include <PID_v1.h>
 
-// Motor Flag
+// Motor Flag (PID calculation starts when flag is turned on to avoid feeding false data to the PID)
 bool motorRunning = false;
 
-// Servo Offsets
+// Servo Offsets (This has to be done manually everytime the gimbal is taken off of the servos)
 const int servoxinit = 93, servoyinit = 83;
 
 // PID Values
-const double Kp = 0.15, Ki = 0.39, Kd = 0.036;
+const double Kp = 0.1062, Ki = 0.27612, Kd = 0.010211538;
 
 // Servo objects
 Servo servoX;   // x-axis servo (outer gimbal)
@@ -18,11 +18,11 @@ Servo servoY;   // y-axis servo (inner gimbal)
 Servo esc;      // JP Hobby 160A ESC
 
 // PID variables for X axis
-double setpointX = 0.0, inputX, outputX;
+double setpointX = 0.0, inputX, outputX; // setpointX = what we want the pitch angle to be; inputX is the current pitch angle; and outputX feeds to servoX to correct offset)
 PID pidX(&inputX, &outputX, &setpointX, Kp, Ki, Kd, DIRECT);
 
 // PID variables for Y axis
-double setpointY = 0.0, inputY, outputY;
+double setpointY = 0.0, inputY, outputY; // setpointY = what we want the roll angle to be; inputY is the current roll angle; and outputY feeds to servoY to correct offset)
 PID pidY(&inputY, &outputY, &setpointY, Kp, Ki, Kd, DIRECT);
 
 // Gyroscope and accelerometer variables
@@ -155,7 +155,7 @@ void loop() {
   }
 }
 
-  // Calculates predicted angle and uncertainty using the Kalman equations
+  // Calculates predicted angle and uncertainty using the Kalman equations; credit to Carbon Aeronautics
 void kalman_1d(float KalmanState, float KalmanUncertainty, float KalmanInput, float KalmanMeasurement) {
   KalmanState=KalmanState+0.004*KalmanInput;
   KalmanUncertainty=KalmanUncertainty + 0.004 * 0.004 * 4 * 4;
@@ -168,7 +168,7 @@ void kalman_1d(float KalmanState, float KalmanUncertainty, float KalmanInput, fl
   Kalman1DOutput[1]=KalmanUncertainty;
 }
 
-// Read the rotation rates, acceleration, and angles from the MPU-6050
+// Read the rotation rates, acceleration, and angles from the MPU-6050; credit to Carbon Aeronautics
 void gyro_signals(void) {
   Wire.beginTransmission(0x68);
   Wire.write(0x1A);
